@@ -2,3 +2,5 @@ bs4
 pandas
 numpy
 scikit-learn
+streamlit
+plotly

@@ -1,1 +1,4 @@
 members_file.txt
+movies.csv
+movies_cached.pkl
+.venv

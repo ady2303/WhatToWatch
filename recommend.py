@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 import time
 import pickle
 import os
@@ -11,6 +11,10 @@ class MovieRecommender:
         """Initialize the recommender system with movie ratings data."""
         self.csv_path = csv_path
         self.cache_path = csv_path.replace('.csv', '_cached.pkl')
+        
+        # Thresholds for movie categorization
+        self.MIN_RATINGS = 20
+        self.MAX_RATINGS = 200
         
         if use_cache and os.path.exists(self.cache_path):
             print("Loading from cache...")
@@ -34,14 +38,20 @@ class MovieRecommender:
                 start = time.time()
                 self._save_to_cache()
                 print(f"Saved to cache in {time.time() - start:.2f} seconds")
-    
+
     def _prepare_data(self) -> None:
         """Prepare the data by filtering movies and creating pivot tables."""
         print("Filtering movies...")
         start = time.time()
         movie_counts = self.movies.groupby("Film ID").count()['Rating']
-        self.famous_movies = movie_counts[movie_counts >= 20].index
-        self.niche_movies = movie_counts[movie_counts <= 200].index
+        
+        # Clear separation between famous and niche movies
+        self.famous_movies = movie_counts[movie_counts >= self.MIN_RATINGS].index
+        self.niche_movies = movie_counts[
+            (movie_counts < self.MIN_RATINGS) & 
+            (movie_counts <= self.MAX_RATINGS)
+        ].index
+        print(f"Found {len(self.famous_movies)} famous movies and {len(self.niche_movies)} niche movies")
         print(f"Filtering completed in {time.time() - start:.2f} seconds")
         
         print("Creating rating dataframes...")
@@ -78,7 +88,9 @@ class MovieRecommender:
             'pt_famous': self.pt_famous,
             'pt_niche': self.pt_niche,
             'similarity_famous': self.similarity_famous,
-            'similarity_niche': self.similarity_niche
+            'similarity_niche': self.similarity_niche,
+            'famous_movies': self.famous_movies,
+            'niche_movies': self.niche_movies
         }
         with open(self.cache_path, 'wb') as f:
             pickle.dump(cache_data, f)
@@ -91,6 +103,8 @@ class MovieRecommender:
         self.pt_niche = cache_data['pt_niche']
         self.similarity_famous = cache_data['similarity_famous']
         self.similarity_niche = cache_data['similarity_niche']
+        self.famous_movies = cache_data['famous_movies']
+        self.niche_movies = cache_data['niche_movies']
     
     @staticmethod
     def _star_to_numeric(star_rating: str) -> Optional[int]:
@@ -101,10 +115,26 @@ class MovieRecommender:
         }
         return rating_map.get(star_rating)
     
-    def recommend(self, movie_id: str, n_recommendations: int = 8, include_niche: bool = False) -> List[str]:
-        """Get movie recommendations based on similarity."""
+    def get_movie_category(self, movie_id: str) -> str:
+        """Determine if a movie is famous, niche, or unknown."""
+        if movie_id in self.famous_movies:
+            return "famous"
+        elif movie_id in self.niche_movies:
+            return "niche"
+        else:
+            return "unknown"
+    
+    def recommend(self, movie_id: str, n_recommendations: int = 8, include_niche: bool = False) -> Dict[str, List[Tuple[str, float]]]:
+        """
+        Get movie recommendations based on similarity.
+        Returns both famous and niche recommendations if requested.
+        """
         start = time.time()
+        results = {"famous": [], "niche": []}
+        movie_category = self.get_movie_category(movie_id)
+        
         try:
+            # Get famous movie recommendations
             if movie_id in self.pt_famous.index:
                 index = np.where(self.pt_famous.index == movie_id)[0][0]
                 similar_items = sorted(
@@ -112,21 +142,23 @@ class MovieRecommender:
                     key=lambda x: x[1],
                     reverse=True
                 )[1:n_recommendations + 1]
-                results = [self.pt_famous.index[i[0]] for i in similar_items]
+                results["famous"] = [(self.pt_famous.index[i[0]], float(i[1])) for i in similar_items]
             
-            elif include_niche and movie_id in self.pt_niche.index:
+            # Get niche movie recommendations if requested
+            if include_niche and movie_id in self.pt_niche.index:
                 index = np.where(self.pt_niche.index == movie_id)[0][0]
                 similar_items = sorted(
                     list(enumerate(self.similarity_niche[index])),
                     key=lambda x: x[1],
                     reverse=True
                 )[1:n_recommendations + 1]
-                results = [self.pt_niche.index[i[0]] for i in similar_items]
+                results["niche"] = [(self.pt_niche.index[i[0]], float(i[1])) for i in similar_items]
             
-            else:
+            if not any(results.values()):
                 raise ValueError(f"Movie ID '{movie_id}' not found in dataset")
             
             print(f"Recommendations generated in {time.time() - start:.2f} seconds")
+            print(f"Movie '{movie_id}' category: {movie_category}")
             return results
                 
         except Exception as e:
@@ -136,7 +168,23 @@ if __name__ == "__main__":
     # Example usage
     recommender = MovieRecommender("movies.csv")
     try:
-        recommendations = recommender.recommend("godzilla-minus-one")
-        print("Recommended movies:", recommendations)
+        # Get recommendations for a famous movie
+        famous_movie = "inception"
+        print(f"\nGetting recommendations for {famous_movie}:")
+        recs = recommender.recommend(famous_movie)
+        print("\nFamous movie recommendations:")
+        for movie, score in recs["famous"]:
+            print(f"{movie}: {score:.3f}")
+            
+        # Get both famous and niche recommendations
+        print(f"\nGetting recommendations for {famous_movie} including niche movies:")
+        recs = recommender.recommend(famous_movie, include_niche=True)
+        print("\nFamous movie recommendations:")
+        for movie, score in recs["famous"]:
+            print(f"{movie}: {score:.3f}")
+        print("\nNiche movie recommendations:")
+        for movie, score in recs["niche"]:
+            print(f"{movie}: {score:.3f}")
+            
     except ValueError as e:
         print(f"Error: {e}")
